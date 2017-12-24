@@ -9,7 +9,7 @@ from keras.layers import Dense
 from keras.optimizers import Adam
 
 EPISODES = 1000
-recall_num = 10
+recall_num = 5
 
 
 class DQNAgent:
@@ -124,7 +124,7 @@ def main():
             next_state = np.reshape(next_state, [1, state_size])
             next_p, next_v = next_state[0, :]
             position_list = np.concatenate((position_list, np.array([[next_p]])), axis=0)[1:, :]
-            r1 = abs(next_p - (-0.5)) * np.var(position_list, axis=0)[0]
+            r1 = abs(next_p - (-0.5)) * np.var(position_list, axis=0)[0] * 100
             r2 = abs(next_v)
             if next_p > 0.5:
                 reward = 10
@@ -143,5 +143,5 @@ def main():
 
 
 if __name__ == "__main__":
-    for _ in range(1):
+    for _ in range(2):
         main()
