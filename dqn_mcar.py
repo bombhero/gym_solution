@@ -9,7 +9,7 @@ from keras.layers import Dense
 from keras.optimizers import Adam
 
 EPISODES = 1000
-recall_num = 5
+recall_num = 3
 
 
 class DQNAgent:
