@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import random
 import collections
+import os
 
 
 class DriverAction:
@@ -24,17 +25,19 @@ class DriverAction:
 class DriverAnalysis(torch.nn.Module):
     def __init__(self, action_n):
         super(DriverAnalysis, self).__init__()
+        self.first_cnn = torch.nn.Conv2d(in_channels=3, out_channels=24,
+                                         kernel_size=5, stride=1)
         self.cnn_part = torch.nn.Sequential(
             torch.nn.Conv2d(in_channels=3, out_channels=24,
-                            kernel_size=3, stride=1),
-            # Output (96-3+1) * (96-3+1) * 24 = 94 * 94 * 24
+                            kernel_size=5, stride=1, padding=0),
+            # Output (96-5+1) * (96-5+1) * 24 = 92 * 92 * 24
             torch.nn.ReLU(),
             torch.nn.MaxPool2d(kernel_size=2),
-            # Output 47 * 47 * 24
+            # Output 46 * 46 * 24
 
             torch.nn.Conv2d(in_channels=24, out_channels=48,
-                            kernel_size=6, stride=1),
-            # Output (47-6+1) * (47-6+1) * 48 = 42 * 42 *48
+                            kernel_size=5, stride=1, padding=0),
+            # Output (46-5+1) * (46-5+1) * 48 = 42 * 42 *48
             torch.nn.ReLU(),
             torch.nn.MaxPool2d(kernel_size=3)
             # Output 14 * 14 * 48
@@ -42,27 +45,93 @@ class DriverAnalysis(torch.nn.Module):
         self.output_part = torch.nn.Linear(in_features=(14 * 14 * 48), out_features=action_n)
 
     def forward(self, x):
+        if len(x.shape) == 3:
+            x = x.expand([1, x.shape[0], x.shape[1], x.shape[2]])
+        x = x.permute(0, 3, 1, 2)
         x = self.cnn_part(x)
         x = x.view(x.size(0), -1)
         return self.output_part(x)
 
 
 class DriverAgent:
-    def __init__(self, observation_space):
+    def __init__(self, observation_space, action_n):
         self.action_option = DriverAction()
         self.observation_space = observation_space
+        self.action_n = action_n
         self.memory = collections.deque()
-        self._build_model()
+        self.random_min = 0.1
+        self.random_threshold = 1
+        self.random_decay = 0.99
+        self.gamma = 0.95
+        self.model_file = "save/racer.pkl"
+        if os.path.exists(self.model_file):
+            self.nn_model = torch.load(self.model_file)
+        else:
+            self.nn_model = self._build_model()
+        print(self.nn_model)
 
     def _build_model(self):
-        self.nn_model = DriverAnalysis(self.action_option.action_n)
+        return DriverAnalysis(self.action_option.action_n)
 
     def act(self, state):
-        action_id = random.randint(0, (self.action_option.action_n - 1))
-        return self.action_option.get_action(action_id)
+        random_value = random.random()
+        if random_value < self.random_threshold:
+            action_id = random.randint(0, (self.action_n - 1))
+            if self.random_threshold > self.random_min:
+                self.random_threshold = self.random_threshold * self.random_decay
+        else:
+            action_id = self.recommend(state)
+        return action_id
 
-    def record(self, state, reward):
-        pass
+    def remember(self, state, reward, action_id, next_state):
+        self.memory.append((state, reward, action_id, next_state))
+
+    def replay(self, batch_size):
+        min_batch = random.sample(self.memory, batch_size)
+        scenarios = None
+        targets = None
+        for (state, reward, action_id, next_state) in min_batch:
+            target_f = self.predict(state)
+            target_f[0][action_id] = reward + self.gamma * np.amax(self.predict(next_state)[0])
+            if scenarios is None:
+                scenarios = np.array([state])
+                targets = target_f
+            else:
+                scenarios = np.concatenate((scenarios, np.array([state])), axis=0)
+                targets = np.concatenate((targets, target_f), axis=0)
+        self.training(state, target_f)
+
+    def predict(self, state):
+        self.nn_model.eval()
+        tensor_x = torch.from_numpy(np.float32(state))
+        result = self.nn_model(tensor_x)
+        return result.data.numpy()
+
+    def recommend(self, state):
+        result = self.predict(state)
+        action_id = np.argmax(result, axis=1)[0]
+        print("predict %d" % action_id)
+        return action_id
+
+    def training(self, x, y):
+        self.nn_model.train()
+        loss_func = torch.nn.MSELoss()
+        optimizer = torch.optim.Adam(self.nn_model.parameters(), lr=0.01)
+        tensor_x = torch.autograd.Variable(torch.from_numpy(np.float32(x)))
+        tensor_y = torch.autograd.Variable(torch.from_numpy(np.float32(y)))
+
+        for _ in range(10):
+            optimizer.zero_grad()
+            prediction = self.nn_model(tensor_x)
+            loss = loss_func(prediction, tensor_y)
+            loss.backward()
+            optimizer.step()
+
+    def load(self):
+        self.nn_model = torch.load(self.model_file)
+
+    def save(self):
+        torch.save(self.nn_model, self.model_file)
 
 
 def run():
@@ -71,18 +140,32 @@ def run():
     for i in range(env.action_space.high.shape[0]):
         action_range.append([env.action_space.high[i], env.action_space.low[i]])
 
-    state = env.reset()
-    driver = DriverAgent(env.observation_space)
-    total = 0
-    for e in range(1000):
-        env.render()
-        action = driver.act(state)
-        state, reward, done, _ = env.step(action)
-        total += reward
-        print("e = %d, gas = %f, reward = %f, done = %d, total = %f" % (e, action[1], reward, done, total))
-        if done:
-            break
-        # time.sleep(0.1)
+    action_option = DriverAction()
+    driver = DriverAgent(env.observation_space, action_option.action_n)
+    for _ in range(100):
+        state = env.reset()
+        total = 0
+        driver.random_threshold = 1
+        for e in range(1000):
+            env.render()
+            action_id = driver.act(state)
+            next_state, reward, done, _ = env.step(action_option.get_action(action_id))
+            if done or (total < -1):
+                reward = -10
+            driver.remember(state, reward, action_id, next_state)
+            if done or (total < -1):
+                break
+            if (e > 64) and (e % 10 == 0):
+                driver.replay(64)
+            if e % 100 == 0:
+                driver.save()
+            total += reward
+            print("e = %d, gas = %f, reward = %f, done = %d, total = %f" % (e,
+                                                                            action_option.get_action(action_id)[1],
+                                                                            reward, done, total))
+            state = next_state
+            # time.sleep(0.1)
+        driver.save()
 
 
 if __name__ == "__main__":
