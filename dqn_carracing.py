@@ -4,6 +4,7 @@ import torch
 import random
 import collections
 import os
+import matplotlib.pyplot as plt
 
 
 class DriverAction:
@@ -54,13 +55,17 @@ class DriverAnalysis(torch.nn.Module):
 
 
 class DriverAgent:
-    def __init__(self, observation_space, action_n):
+    def __init__(self, observation_space, action_n, training=True):
         self.action_option = DriverAction()
         self.observation_space = observation_space
         self.action_n = action_n
         self.memory = collections.deque()
-        self.random_min = 0.1
-        self.random_threshold = 1
+        if training:
+            self.random_min = 0.1
+            self.random_threshold = 1
+        else:
+            self.random_min = 0
+            self.random_threshold = 0
         self.random_decay = 0.99
         self.gamma = 0.95
         self.model_file = "save/racer.pkl"
@@ -86,7 +91,13 @@ class DriverAgent:
     def remember(self, state, reward, action_id, next_state):
         self.memory.append((state, reward, action_id, next_state))
 
-    def replay(self, batch_size):
+    def replay(self, max_batch_size):
+        if self.random_min == 0:
+            return
+        if len(self.memory) > max_batch_size:
+            batch_size = max_batch_size
+        else:
+            batch_size = len(self.memory)
         min_batch = random.sample(self.memory, batch_size)
         scenarios = None
         targets = None
@@ -141,27 +152,39 @@ def run():
         action_range.append([env.action_space.high[i], env.action_space.low[i]])
 
     action_option = DriverAction()
-    driver = DriverAgent(env.observation_space, action_option.action_n)
+    driver = DriverAgent(env.observation_space, action_option.action_n, training=True)
     for _ in range(100):
         state = env.reset()
         total = 0
-        driver.random_threshold = 1
+        if driver.random_min > 0:
+            driver.random_threshold = 1
         for e in range(1000):
             env.render()
-            action_id = driver.act(state)
+            if e < 50:
+                action_id = 6
+            else:
+                action_id = driver.act(state)
+            # plt.title(e)
+            # plt.imshow(state)
+            # plt.pause(0.1)
             next_state, reward, done, _ = env.step(action_option.get_action(action_id))
+            if reward < 0:
+                reward *= 3
             if done or (total < -1):
                 reward = -10
-            driver.remember(state, reward, action_id, next_state)
+            if e >= 50:
+                driver.remember(state, reward, action_id, next_state)
             if done or (total < -1):
                 break
             if (e > 64) and (e % 10 == 0):
-                driver.replay(64)
+                driver.replay(128)
             if e % 100 == 0:
                 driver.save()
             total += reward
-            print("e = %d, gas = %f, reward = %f, done = %d, total = %f" % (e,
+            print("e = %d, r= %.1f, g= %.1f, b= %.1f, reward = %.2f, done = %d, total = %f" % (e,
+                                                                            action_option.get_action(action_id)[0],
                                                                             action_option.get_action(action_id)[1],
+                                                                            action_option.get_action(action_id)[2],
                                                                             reward, done, total))
             state = next_state
             # time.sleep(0.1)
