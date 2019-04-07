@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 class DriverAction:
     def __init__(self):
         self.action_option = np.array([[-0.5, 0, 0],
-                                       [-0.5, 0.5, 0],
-                                       [-0.5, 0, 0.5],
+                                       # [-0.5, 0.5, 0],
+                                       # [-0.5, 0, 0.5],
                                        [0.5, 0, 0],
-                                       [0.5, 0.5, 0],
-                                       [0.5, 0, 0.5],
+                                       # [0.5, 0.5, 0],
+                                       # [0.5, 0, 0.5],
                                        [0, 0.5, 0],
-                                       [0, 0, 0.5]])
+                                       [0, 0, 0.5],
+                                       [0, 0, 0]])
         self.action_n = self.action_option.shape[0]
 
     def get_action(self, action_id):
@@ -92,8 +93,8 @@ class DriverAgent:
         self.memory.append((state, reward, action_id, next_state))
 
     def replay(self, max_batch_size):
-        if self.random_min == 0:
-            return
+        # if self.random_min == 0:
+        #     return
         if len(self.memory) > max_batch_size:
             batch_size = max_batch_size
         else:
@@ -152,8 +153,12 @@ def run():
         action_range.append([env.action_space.high[i], env.action_space.low[i]])
 
     action_option = DriverAction()
-    driver = DriverAgent(env.observation_space, action_option.action_n, training=True)
-    for _ in range(100):
+    remember_state = np.zeros([96, 96, 3])
+    for r in range(100):
+        if r % 10 == 0:
+            driver = DriverAgent(env.observation_space, action_option.action_n, training=False)
+        else:
+            driver = DriverAgent(env.observation_space, action_option.action_n, training=True)
         state = env.reset()
         total = 0
         if driver.random_min > 0:
@@ -161,11 +166,15 @@ def run():
         for e in range(1000):
             env.render()
             if e < 50:
-                action_id = 6
+                action_id = 2
             else:
                 action_id = driver.act(state)
+            gray_state = 0.299 * state[:, :, 0] + 0.587 * state[:, :, 1] + 0.114 * state[:, :, 2]
+            remember_state[:, :, 2] = remember_state[:, :, 1]
+            remember_state[:, :, 1] = remember_state[:, :, 0]
+            remember_state[:, :, 0] = gray_state
             # plt.title(e)
-            # plt.imshow(state)
+            # plt.imshow(gray_state)
             # plt.pause(0.1)
             next_state, reward, done, _ = env.step(action_option.get_action(action_id))
             if reward < 0:
@@ -173,11 +182,12 @@ def run():
             if done or (total < -1):
                 reward = -10
             if e >= 50:
-                driver.remember(state, reward, action_id, next_state)
+                driver.remember(remember_state, reward, action_id, next_state)
             if done or (total < -1):
                 break
             if (e > 64) and (e % 10 == 0):
                 driver.replay(128)
+                driver.replay(256)
             if e % 100 == 0:
                 driver.save()
             total += reward
