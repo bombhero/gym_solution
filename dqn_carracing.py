@@ -7,6 +7,9 @@ import os
 import matplotlib.pyplot as plt
 
 
+use_gpu = True
+
+
 class DriverAction:
     def __init__(self):
         self.action_option = np.array([[-0.5, 0, 0],
@@ -25,12 +28,12 @@ class DriverAction:
 
 
 class DriverAnalysis(torch.nn.Module):
-    def __init__(self, action_n):
+    def __init__(self, action_n, status_deep):
         super(DriverAnalysis, self).__init__()
-        self.first_cnn = torch.nn.Conv2d(in_channels=3, out_channels=24,
+        self.first_cnn = torch.nn.Conv2d(in_channels=status_deep, out_channels=24,
                                          kernel_size=5, stride=1)
         self.cnn_part = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=3, out_channels=24,
+            torch.nn.Conv2d(in_channels=status_deep, out_channels=24,
                             kernel_size=5, stride=1, padding=0),
             # Output (96-5+1) * (96-5+1) * 24 = 92 * 92 * 24
             torch.nn.ReLU(),
@@ -70,14 +73,20 @@ class DriverAgent:
         self.random_decay = 0.99
         self.gamma = 0.95
         self.model_file = "save/racer.pkl"
-        if os.path.exists(self.model_file):
-            self.nn_model = torch.load(self.model_file)
+        if use_gpu:
+            if os.path.exists(self.model_file):
+                self.nn_model = torch.load(self.model_file).cuda()
+            else:
+                self.nn_model = self._build_model().cuda()
         else:
-            self.nn_model = self._build_model()
+            if os.path.exists(self.model_file):
+                self.nn_model = torch.load(self.model_file)
+            else:
+                self.nn_model = self._build_model()
         print(self.nn_model)
 
     def _build_model(self):
-        return DriverAnalysis(self.action_option.action_n)
+        return DriverAnalysis(self.action_option.action_n, self.observation_space[2])
 
     def act(self, state):
         random_value = random.random()
@@ -115,9 +124,15 @@ class DriverAgent:
 
     def predict(self, state):
         self.nn_model.eval()
-        tensor_x = torch.from_numpy(np.float32(state))
+        if use_gpu:
+            tensor_x = torch.from_numpy(np.float32(state)).cuda()
+        else:
+            tensor_x = torch.from_numpy(np.float32(state))
         result = self.nn_model(tensor_x)
-        return result.data.numpy()
+        if use_gpu:
+            return result.data.cpu().numpy()
+        else:
+            return result.data.numpy()
 
     def recommend(self, state):
         result = self.predict(state)
@@ -129,8 +144,12 @@ class DriverAgent:
         self.nn_model.train()
         loss_func = torch.nn.MSELoss()
         optimizer = torch.optim.Adam(self.nn_model.parameters(), lr=0.01)
-        tensor_x = torch.autograd.Variable(torch.from_numpy(np.float32(x)))
-        tensor_y = torch.autograd.Variable(torch.from_numpy(np.float32(y)))
+        if use_gpu:
+            tensor_x = torch.autograd.Variable(torch.from_numpy(np.float32(x)).cuda())
+            tensor_y = torch.autograd.Variable(torch.from_numpy(np.float32(y)).cuda())
+        else:
+            tensor_x = torch.autograd.Variable(torch.from_numpy(np.float32(x)))
+            tensor_y = torch.autograd.Variable(torch.from_numpy(np.float32(y)))
 
         for _ in range(10):
             optimizer.zero_grad()
@@ -153,36 +172,42 @@ def run():
         action_range.append([env.action_space.high[i], env.action_space.low[i]])
 
     action_option = DriverAction()
-    remember_state = np.zeros([96, 96, 3])
-    for r in range(100):
+    remember_state = np.zeros([96, 96, 12])
+    remember_next_state = np.zeros([96, 96, 12])
+    for r in range(1000):
         if r % 10 == 0:
-            driver = DriverAgent(env.observation_space, action_option.action_n, training=False)
+            driver = DriverAgent(remember_state.shape, action_option.action_n, training=False)
         else:
-            driver = DriverAgent(env.observation_space, action_option.action_n, training=True)
-        state = env.reset()
+            driver = DriverAgent(remember_state.shape, action_option.action_n, training=True)
+        next_state = env.reset()
         total = 0
         if driver.random_min > 0:
             driver.random_threshold = 1
         for e in range(1000):
             env.render()
+            state = next_state
+            gray_state = 0.299 * state[:, :, 0] + 0.587 * state[:, :, 1] + 0.114 * state[:, :, 2]
+            for i in range(remember_state.shape[2] - 1):
+                remember_state[:, :, i] = remember_state[:, :, (i+1)]
+            remember_state[:, :, (remember_state.shape[2] - 1)] = gray_state
             if e < 50:
                 action_id = 2
             else:
-                action_id = driver.act(state)
-            gray_state = 0.299 * state[:, :, 0] + 0.587 * state[:, :, 1] + 0.114 * state[:, :, 2]
-            remember_state[:, :, 2] = remember_state[:, :, 1]
-            remember_state[:, :, 1] = remember_state[:, :, 0]
-            remember_state[:, :, 0] = gray_state
+                action_id = driver.act(remember_state)
             # plt.title(e)
             # plt.imshow(gray_state)
             # plt.pause(0.1)
             next_state, reward, done, _ = env.step(action_option.get_action(action_id))
+            next_gray_state = 0.299 * next_state[:, :, 0] + 0.587 * next_state[:, :, 1] + 0.114 * next_state[:, :, 2]
+            for i in range(remember_next_state.shape[2] - 1):
+                remember_next_state[:, :, i] = remember_next_state[:, :, (i+1)]
+            remember_next_state[:, :, (remember_next_state.shape[2]-1)] = next_gray_state
             if reward < 0:
                 reward *= 3
             if done or (total < -1):
                 reward = -10
             if e >= 50:
-                driver.remember(remember_state, reward, action_id, next_state)
+                driver.remember(remember_state, reward, action_id, remember_next_state)
             if done or (total < -1):
                 break
             if (e > 64) and (e % 10 == 0):
@@ -191,12 +216,11 @@ def run():
             if e % 100 == 0:
                 driver.save()
             total += reward
-            print("e = %d, r= %.1f, g= %.1f, b= %.1f, reward = %.2f, done = %d, total = %f" % (e,
+            print("r=%d, e = %d, r= %.1f, g= %.1f, b= %.1f, reward = %.2f, done = %d, total = %f" % (r, e,
                                                                             action_option.get_action(action_id)[0],
                                                                             action_option.get_action(action_id)[1],
                                                                             action_option.get_action(action_id)[2],
                                                                             reward, done, total))
-            state = next_state
             # time.sleep(0.1)
         driver.save()
 
