@@ -2,6 +2,7 @@ import gym
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import random
 
 
 class EnvSpace:
@@ -30,7 +31,7 @@ class ActorNet(torch.nn.Module):
 
     def forward(self, observation):
         x = self.first_active(self.first_layer(observation))
-        action = self.second_layer(x)
+        action = self.second_active(self.second_layer(x))
         return action
 
 
@@ -55,6 +56,7 @@ class CriticNet(torch.nn.Module):
 class ActorCriticAgent:
     def __init__(self, n_observation, n_action, calc_device='cpu'):
         self.tau = 0.001
+        self.threshold = 0.0
 
         self.calc_device = calc_device
         self.actor_net = ActorNet(n_observation, n_action).to(self.calc_device)
@@ -63,10 +65,6 @@ class ActorCriticAgent:
         self.critic_target = CriticNet(n_observation, n_action).to(self.calc_device)
         self.actor_optim = torch.optim.Adam(self.actor_net.parameters(), lr=0.01)
         self.critic_optim = torch.optim.Adam(self.critic_net.parameters(), lr=0.01)
-        # self.actor_optim = torch.optim.SGD(self.actor_net.parameters(), lr=0.01)
-        # self.critic_optim = torch.optim.SGD(self.actor_net.parameters(), lr=0.01)
-        # self.actor_optim = torch.optim.Adagrad(self.actor_net.parameters(), lr=0.01)
-        # self.critic_optim = torch.optim.Adagrad(self.actor_net.parameters(), lr=0.01)
         self.actor_loss = torch.nn.MSELoss()
         self.critic_loss = torch.nn.MSELoss()
 
@@ -75,14 +73,11 @@ class ActorCriticAgent:
 
     def training(self, observations, rewards, targets=None):
         observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
-        actions_tensor = self.actor_target(observe_tensor)
-        actions_batch = actions_tensor.cpu().detach().numpy()
+        actions_batch = self.action(observations)
+        actions_tensor = torch.from_numpy(np.float32(actions_batch)).to(self.calc_device)
         rewards_batch = -np.abs(targets - actions_batch)
         ret_loss = [0, 0]
 
-        # for i in range(rewards_batch.shape[0]):
-        #     if rewards_batch[i] > 0:
-        #         rewards_batch[i] = 1 / rewards_batch[i]
         rewards_tensor = torch.from_numpy(np.float32(rewards_batch)).to(self.calc_device)
 
         self.critic_net.zero_grad()
@@ -119,8 +114,12 @@ class ActorCriticAgent:
     def action(self, observations):
         observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
         actions_tensor = self.actor_target(observe_tensor)
+        action = actions_tensor.cpu().detach().numpy()
 
-        return actions_tensor.cpu().detach().numpy()
+        for i in range(action.shape[0]):
+            if random.random() > self.threshold:
+                action[i, 0] = random.random() * 2 - 1
+        return action
 
     def critic(self, observations, actions):
         observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
@@ -128,7 +127,6 @@ class ActorCriticAgent:
         critic_tensor = self.critic_target(observe_tensor, action_tensor)
 
         return critic_tensor.cpu().detach().numpy()
-
 
     @staticmethod
     def soft_update(target_net, source_net, tau):
@@ -140,14 +138,45 @@ class ActorCriticAgent:
     def hard_update(self, target_net, source_net):
         self.soft_update(target_net, source_net, 1)
 
+    @staticmethod
+    def value_map(area, value):
+        """
+        Map the value from area to [1, -1]
+        :param area:
+        :param value: shape should be n * 1
+        :return:
+        """
+        ret_value = np.zeros(value.shape[0])
+        area_mid = (area[0] + area[1])
+        area_len = (area[0] - area[1])
+        for i in range(value.shape[0]):
+            ret_value = (2 * value[i, 0] - area_mid) / area_len
+        return ret_value
+
+    @staticmethod
+    def value_unmap(area, value):
+        """
+        Map the value from [1, -1] to area.
+        :param area:
+        :param value:
+        :return:
+        """
+        ret_value = np.zeros(value.shape[0])
+        area_mid = (area[0] + area[1])
+        area_len = (area[0] - area[1])
+        for i in range(value.shape[0]):
+            ret_value = (value[i, 0] * area_len + area_mid) / 2
+        return ret_value
+
 
 def main():
     if torch.cuda.is_available():
         calc_device = 'cuda'
     else:
         calc_device = 'cpu'
-    # env = gym.make('MountainCarContinuous-v0')
-    env = TestEnv()
+    print('Use {}'.format(calc_device))
+    env = gym.make('MountainCarContinuous-v0')
+    # env = TestEnv()
     agent = ActorCriticAgent(env.observation_space.shape[0],
                              env.action_space.shape[0],
                              calc_device)
@@ -160,15 +189,22 @@ def main():
     result_list = []
     critic_list = []
 
+    done = False
+
     for i in range(500):
+        observe = env.reset()
+        while not done:
+            action
+
         observe_batch = np.random.random([128, 4]) * 2 - 1
         target_batch = np.zeros([128, 1])
         observe_test = np.random.random([1, 4]) * 2 - 1
-        target_test = sum(observe_test[0]) / 4
+        target_test = sum(observe_test[0, :]) / 4
 
         for j in range(target_batch.shape[0]):
             target_batch[j, 0] = sum(observe_batch[j]) / 4
 
+        agent.threshold = i / 100.0
         for _ in range(200):
             ret_loss = agent.training(observe_batch, None, target_batch)
 
