@@ -78,6 +78,7 @@ class ActorCriticAgent:
         actions_tensor = self.actor_target(observe_tensor)
         actions_batch = actions_tensor.cpu().detach().numpy()
         rewards_batch = -np.abs(targets - actions_batch)
+        ret_loss = [0, 0]
 
         # for i in range(rewards_batch.shape[0]):
         #     if rewards_batch[i] > 0:
@@ -90,15 +91,19 @@ class ActorCriticAgent:
         # print(loss.cpu())
         loss.backward()
         self.critic_optim.step()
+        ret_loss[0] = loss.cpu().detach().numpy()
 
         self.actor_net.zero_grad()
         loss = -self.critic_net(observe_tensor, self.actor_net(observe_tensor))
         loss = loss.mean()
         loss.backward()
         self.actor_optim.step()
+        ret_loss[1] = loss.cpu().detach().numpy()
 
         self.soft_update(self.actor_target, self.actor_net, self.tau)
         self.soft_update(self.critic_target, self.critic_net, self.tau)
+
+        return ret_loss
 
     # def training(self, observations, rewards, targets):
     #     observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
@@ -154,18 +159,18 @@ def main():
     action_list = []
     result_list = []
     critic_list = []
-    observe_test = np.random.random([1, 4]) * 2 - 1
-    target_test = sum(observe_test[0]) / 4
 
     for i in range(500):
         observe_batch = np.random.random([128, 4]) * 2 - 1
         target_batch = np.zeros([128, 1])
+        observe_test = np.random.random([1, 4]) * 2 - 1
+        target_test = sum(observe_test[0]) / 4
 
         for j in range(target_batch.shape[0]):
             target_batch[j, 0] = sum(observe_batch[j]) / 4
 
         for _ in range(200):
-            agent.training(observe_batch, None, target_batch)
+            ret_loss = agent.training(observe_batch, None, target_batch)
 
         action_test = agent.action(observe_test)
         critic_test = agent.critic(observe_test, action_test)
@@ -174,7 +179,7 @@ def main():
         action_list.append(action_test[0, 0])
         critic_list.append((critic_test[0, 0]))
         result_list.append(-abs(target_test - action_test[0, 0]))
-        print(result_list[-1])
+        print("{}--{}".format(result_list[-1], ret_loss))
         plt.cla()
         plt.plot(result_list, 'g-')
         plt.plot(target_list, 'b-')
