@@ -1,5 +1,6 @@
 import gym
 import torch
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import random
@@ -61,6 +62,7 @@ class ActorCriticAgent:
         self.memory = deque(maxlen=2000)
         self.observation_space = observation_space
         self.action_space = action_space
+        self.train_mode = True
 
         self.calc_device = calc_device
         self.actor_net = ActorNet(observation_space.shape[0], action_space.shape[0]).to(self.calc_device)
@@ -104,54 +106,28 @@ class ActorCriticAgent:
 
         return ret_loss
 
-    # def training(self, observations, rewards, targets):
-    #     observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
-    #     targets_tensor = torch.from_numpy(np.float32(targets)).to(self.calc_device)
-    #
-    #     self.actor_net.train()
-    #     self.actor_optim.zero_grad()
-    #     pred_y = self.actor_net(observe_tensor)
-    #     loss = self.actor_loss(pred_y, targets_tensor)
-    #     loss.backward()
-    #     self.actor_optim.step()
-
     def action(self, observations):
-        observe_inside = None
-        for col_idx in range(self.observation_space.shape[0]):
-            if observe_inside is None:
-                observe_inside = self.value_map([self.observation_space.high[col_idx],
-                                                 self.observation_space.low[col_idx]],
-                                                observations[:, col_idx:col_idx+1])
-            else:
-                observe_tmp = self.value_map([self.observation_space.high[col_idx],
-                                              self.observation_space.low[col_idx]],
-                                             observations[:, col_idx:col_idx+1])
-                observe_inside = np.concatenate((observe_inside, observe_tmp), axis=1)
+        observe_inside = self.observes_map(observations)
 
         observe_tensor = torch.from_numpy(np.float32(observe_inside)).to(self.calc_device)
         actions_tensor = self.actor_target(observe_tensor)
         action_inside = actions_tensor.cpu().detach().numpy()
 
-        for i in range(action_inside.shape[0]):
-            if random.random() > self.threshold:
-                for col_idx in range(self.action_space.shape[0]):
-                    action_inside[i, col_idx] = random.random() * 2 - 1
+        if self.train_mode:
+            for i in range(action_inside.shape[0]):
+                if random.random() > self.threshold:
+                    for col_idx in range(self.action_space.shape[0]):
+                        action_inside[i, col_idx] = random.random() * 2 - 1
 
-        action = None
-        for col_idx in range(self.action_space.shape[0]):
-            if action is None:
-                action = self.value_unmap([self.action_space.high[col_idx], self.action_space.low[col_idx]],
-                                          action_inside[:, col_idx:col_idx+1])
-            else:
-                action_tmp = self.value_unmap([self.action_space.high[col_idx], self.action_space.low[col_idx]],
-                                              action_inside[:, col_idx:col_idx+1])
-                action = np.concatenate((action, action_tmp), axis=1)
+        action = self.action_unmap(action_inside)
 
         return action
 
     def critic(self, observations, actions):
-        observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
-        action_tensor = torch.from_numpy(np.float32(actions)).to(self.calc_device)
+        observe_inside = self.observes_map(observations)
+        action_inside = self.action_map(actions)
+        observe_tensor = torch.from_numpy(np.float32(observe_inside)).to(self.calc_device)
+        action_tensor = torch.from_numpy(np.float32(action_inside)).to(self.calc_device)
         critic_tensor = self.critic_target(observe_tensor, action_tensor)
 
         return critic_tensor.cpu().detach().numpy()
@@ -199,6 +175,45 @@ class ActorCriticAgent:
             ret_value[i, 0] = (value[i, 0] * area_len + area_mid) / 2
         return ret_value
 
+    def matrix_map(self, matrix, space):
+        matrix_out = None
+        for col_idx in range(space.shape[0]):
+            if matrix_out is None:
+                matrix_out = self.value_map([space.high[col_idx], space.low[col_idx]], matrix[:, col_idx:col_idx+1])
+            else:
+                matrix_tmp = self.value_map([space.high[col_idx], space.low[col_idx]], matrix[:, col_idx:col_idx+1])
+                matrix_out = np.concatenate((matrix_out, matrix_tmp), axis=1)
+        return matrix_out
+
+    def matrix_unmap(self, matrix, space):
+        matrix_out = None
+        for col_idx in range(space.shape[0]):
+            if matrix_out is None:
+                matrix_out = self.value_unmap([space.high[col_idx], space.low[col_idx]], matrix[:, col_idx:col_idx+1])
+            else:
+                matrix_tmp = self.value_unmap([space.high[col_idx], space.low[col_idx]], matrix[:, col_idx:col_idx+1])
+                matrix_out = np.concatenate((matrix_out, matrix_tmp), axis=1)
+        return matrix_out
+
+    def observes_map(self, observations):
+        return self.matrix_map(observations, self.observation_space)
+
+    def action_map(self, actions):
+        return self.matrix_map(actions, self.action_space)
+
+    def action_unmap(self, actions):
+        return self.matrix_unmap(actions, self.action_space)
+
+    def save(self, path):
+        if not os.path.exists(path):
+            os.mkdir(path)
+
+        actor_file = path + 'actor.pkl'
+        critic_file = path + 'critic.pkl'
+
+        torch.save(self.actor_net, actor_file)
+        torch.save(self.critic_net, critic_file)
+
 
 def main():
     if torch.cuda.is_available():
@@ -214,9 +229,8 @@ def main():
     plt.show()
     plt.cla()
 
-    done = False
-
     for i in range(5):
+        done = False
         reward_list = []
         position_list = []
         observe = env.reset()
@@ -235,8 +249,7 @@ def main():
             plt.cla()
             plt.plot(reward_list, 'b-')
             plt.plot(position_list, 'r-')
-            plt.pause(0.01)
-
+            # plt.pause(0.01)
 
         # plt.cla()
         # plt.plot(result_list, 'g-')
