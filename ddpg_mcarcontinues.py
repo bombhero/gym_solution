@@ -56,13 +56,15 @@ class CriticNet(torch.nn.Module):
 
 
 class ActorCriticAgent:
-    def __init__(self, observation_space, action_space, calc_device='cpu'):
+    def __init__(self, observation_space, action_space, calc_device='cpu', train_mode=True):
         self.tau = 0.001
         self.threshold = 0.0
         self.memory = deque(maxlen=2000)
         self.observation_space = observation_space
         self.action_space = action_space
-        self.train_mode = True
+        self.train_mode = train_mode
+        self.batch_size = 128
+        self.discount = 0.95
 
         self.calc_device = calc_device
         self.actor_net = ActorNet(observation_space.shape[0], action_space.shape[0]).to(self.calc_device)
@@ -77,34 +79,62 @@ class ActorCriticAgent:
         self.hard_update(self.actor_target, self.actor_net)
         self.hard_update(self.critic_target, self.critic_net)
 
-    def training(self, observations, rewards, targets=None):
-        observe_tensor = torch.from_numpy(np.float32(observations)).to(self.calc_device)
-        actions_batch = self.action(observations)
-        actions_tensor = torch.from_numpy(np.float32(actions_batch)).to(self.calc_device)
-        rewards_batch = -np.abs(targets - actions_batch)
-        ret_loss = [0, 0]
+    def training(self):
+        if len(self.memory) > self.batch_size:
+            batch_size = self.batch_size
+        else:
+            batch_size = len(self.memory)
 
-        rewards_tensor = torch.from_numpy(np.float32(rewards_batch)).to(self.calc_device)
+        min_batch = random.sample(self.memory, batch_size)
+        observe_batch = None
+        action_batch = None
+        reward_batch = None
+        next_observe_batch = None
+        for (observe, action, reward, next_observe) in min_batch:
+            if observe_batch is None:
+                observe_batch = observe[np.newaxis, :]
+            else:
+                observe_batch = np.concatenate((observe_batch, observe[np.newaxis, :]), axis=0)
 
-        self.critic_net.zero_grad()
-        pred_y = self.critic_net(observe_tensor, actions_tensor)
-        loss = self.critic_loss(pred_y, rewards_tensor)
-        # print(loss.cpu())
+            if action_batch is None:
+                action_batch = action[np.newaxis, :]
+            else:
+                action_batch = np.concatenate((action_batch, action[np.newaxis, :]), axis=0)
+
+            if reward_batch is None:
+                reward_batch = np.array([[reward]])
+            else:
+                reward_batch = np.concatenate((reward_batch, np.array([[reward]])), axis=0)
+
+            if next_observe_batch is None:
+                next_observe_batch = next_observe[np.newaxis, :]
+            else:
+                next_observe_batch = np.concatenate((next_observe_batch, next_observe[np.newaxis, :]), axis=0)
+
+        observe_tensor = torch.from_numpy(np.float32(self.observes_map(observe_batch))).to(self.calc_device)
+        next_observe_tensor = torch.from_numpy(np.float32(self.observes_map(next_observe_batch))).to(self.calc_device)
+        action_tensor = torch.from_numpy(np.float32(self.action_map(action_batch))).to(self.calc_device)
+        reward_tensor = torch.from_numpy(np.float32(reward_batch)).to(self.calc_device)
+
+        q_tensor = self.critic_target(next_observe_tensor, self.actor_target(next_observe_tensor))
+        target_q_batch = reward_tensor + self.discount * q_tensor
+
+        self.critic_optim.zero_grad()
+        pred_y = self.critic_net(observe_tensor, action_tensor)
+        loss = self.critic_loss(pred_y, target_q_batch)
         loss.backward()
         self.critic_optim.step()
-        ret_loss[0] = loss.cpu().detach().numpy()
 
-        self.actor_net.zero_grad()
+        self.actor_optim.zero_grad()
         loss = -self.critic_net(observe_tensor, self.actor_net(observe_tensor))
         loss = loss.mean()
         loss.backward()
         self.actor_optim.step()
-        ret_loss[1] = loss.cpu().detach().numpy()
 
         self.soft_update(self.actor_target, self.actor_net, self.tau)
         self.soft_update(self.critic_target, self.critic_net, self.tau)
 
-        return ret_loss
+        # return ret_loss
 
     def action(self, observations):
         observe_inside = self.observes_map(observations)
@@ -133,6 +163,8 @@ class ActorCriticAgent:
         return critic_tensor.cpu().detach().numpy()
 
     def remember(self, observe, action, reward, next_observe):
+        if len(self.memory) == self.memory.maxlen:
+            self.memory.popleft()
         self.memory.append((observe, action, reward, next_observe))
 
     @staticmethod
@@ -229,18 +261,28 @@ def main():
     plt.show()
     plt.cla()
 
-    for i in range(5):
+    play_count = 0
+
+    for i in range(20):
         done = False
         reward_list = []
         position_list = []
         observe = env.reset()
+        agent.threshold = i / 10.0
 
         while not done:
             env.render()
-            action = agent.action(np.array([observe]))
-            next_observe, reward, done, _ = env.step(action[0])
-            print("{}, {}, {}, {}".format(observe, action, reward, done))
+            action = agent.action(np.array([observe]))[0]
+            next_observe, reward, done, _ = env.step(action)
+            print("[{}]: {}, {}, {}, {}".format(i, observe, action, reward, done))
             agent.remember(observe, action, reward, next_observe)
+            if play_count >= 150:
+                print("Training...")
+                for _ in range(100):
+                    agent.training()
+                play_count = 0
+            else:
+                play_count += 1
 
             observe = next_observe
 
@@ -250,13 +292,6 @@ def main():
             plt.plot(reward_list, 'b-')
             plt.plot(position_list, 'r-')
             # plt.pause(0.01)
-
-        # plt.cla()
-        # plt.plot(result_list, 'g-')
-        # plt.plot(target_list, 'b-')
-        # plt.plot(action_list, 'r-')
-        # plt.plot(critic_list, 'g*')
-        # plt.pause(0.001)
 
 
 if __name__ == '__main__':
