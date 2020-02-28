@@ -137,6 +137,7 @@ class ActorCriticAgent:
         # return ret_loss
 
     def action(self, observations):
+        is_random = False
         observe_inside = self.observes_map(observations)
 
         observe_tensor = torch.from_numpy(np.float32(observe_inside)).to(self.calc_device)
@@ -146,12 +147,13 @@ class ActorCriticAgent:
         if self.train_mode:
             for i in range(action_inside.shape[0]):
                 if random.random() > self.threshold:
+                    is_random = True
                     for col_idx in range(self.action_space.shape[0]):
                         action_inside[i, col_idx] = random.random() * 2 - 1
 
         action = self.action_unmap(action_inside)
 
-        return action
+        return action, is_random
 
     def critic(self, observations, actions):
         observe_inside = self.observes_map(observations)
@@ -254,7 +256,6 @@ def main():
         calc_device = 'cpu'
     print('Use {}'.format(calc_device))
     env = gym.make('MountainCarContinuous-v0')
-    # env = TestEnv()
     agent = ActorCriticAgent(env.observation_space, env.action_space, calc_device)
 
     plt.ion()
@@ -272,9 +273,11 @@ def main():
 
         while not done:
             env.render()
-            action = agent.action(np.array([observe]))[0]
+            action, is_random = agent.action(np.array([observe]))
+            action = action[0]
             next_observe, reward, done, _ = env.step(action)
-            print("[{}]: {}, {}, {}, {}".format(i, observe, action, reward, done))
+            print("[{}] {}, {}, {}, {}".format(i, observe, action, reward, is_random))
+            reward = next_observe[0] + abs(next_observe[1] * 10) - 1.3
             agent.remember(observe, action, reward, next_observe)
             if play_count >= 150:
                 print("Training...")
@@ -291,7 +294,8 @@ def main():
             plt.cla()
             plt.plot(reward_list, 'b-')
             plt.plot(position_list, 'r-')
-            # plt.pause(0.01)
+
+        agent.save('./save/mcarcontinues')
 
 
 if __name__ == '__main__':
