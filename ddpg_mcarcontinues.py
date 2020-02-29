@@ -242,8 +242,8 @@ class ActorCriticAgent:
         if not os.path.exists(path):
             os.mkdir(path)
 
-        actor_file = path + 'actor.pkl'
-        critic_file = path + 'critic.pkl'
+        actor_file = path + '/actor.pkl'
+        critic_file = path + '/critic.pkl'
 
         torch.save(self.actor_net, actor_file)
         torch.save(self.critic_net, critic_file)
@@ -264,22 +264,25 @@ def main():
 
     play_count = 0
 
-    for i in range(20):
+    for i in range(15):
         done = False
         reward_list = []
         position_list = []
         observe = env.reset()
         agent.threshold = i / 10.0
+        if i > 10:
+            agent.train_mode = False
 
         while not done:
-            env.render()
+            if i > 5:
+                env.render()
             action, is_random = agent.action(np.array([observe]))
             action = action[0]
             next_observe, reward, done, _ = env.step(action)
             print("[{}] {}, {}, {}, {}".format(i, observe, action, reward, is_random))
             reward = next_observe[0] + abs(next_observe[1] * 10) - 1.3
             agent.remember(observe, action, reward, next_observe)
-            if play_count >= 150:
+            if play_count >= 150 and agent.train_mode:
                 print("Training...")
                 for _ in range(100):
                     agent.training()
